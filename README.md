@@ -1,1 +1,1 @@
-# FM Radio project with smartpower2.
+# FM Radio project with tea5767(fm module) and smartpower2.
