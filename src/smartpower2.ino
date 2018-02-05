@@ -1,3 +1,9 @@
+/*----------------------------------------------------------------------------*/
+/*
+	SmartPower2 - FMRadio(TEA5767)
+	2018.02 ~
+*/
+/*----------------------------------------------------------------------------*/
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
@@ -10,263 +16,280 @@
 #include <mcp4652.h>
 #include <LiquidCrystal_I2C.h>
 
-#define CONSOLE_PORT 23
+/*----------------------------------------------------------------------------*/
+#define	USE_SERIAL		Serial
+
+#define	CONSOLE_PORT		23
 
 WiFiServer logServer(CONSOLE_PORT);
 WiFiClient logClient;
 
-#define USE_SERIAL Serial
+/*----------------------------------------------------------------------------*/
+/* PIN Assigned for Smartpower2 H/W */
+/*----------------------------------------------------------------------------*/
+#define	POWER			D6
+#define	POWERLED		D1
+#define	BTN_ONOFF		D7
+#define	I2C_SDA			D2
+#define	I2C_SCL			D5
 
-#define MAX_LCD_SSID_LENGTH	12
-#define MAX_LCD_IP_LENGTH	14
+/*----------------------------------------------------------------------------*/
+/* Command char define */
+/*----------------------------------------------------------------------------*/
+#define	SET_DEFAULT_VOLTAGE	'v'
+#define	SET_VOLTAGE		'w'
+#define	SAVE_NETWORKS		'n'
+#define	CMD_ONOFF		'o'
+#define	SET_AUTORUN		'a'
+#define	PAGE_STATE		'p'
+#define	DATA_PVI		'd'
+#define	MEASUREWATTHOUR		'm'
+#define	FW_VERSION		'f'
 
-#define ON	0
-#define OFF	1
-#define HOME    0
-#define SETTINGS    1
+#define	FWversion	1.2
 
-#define POWER		D6
-#define POWERLED	D1
-#define BTN_ONOFF	D7
-#define I2C_SDA		D2
-#define I2C_SCL		D5
+/*----------------------------------------------------------------------------*/
+#define	MAX_LCD_SSID_LENGTH	12
+#define	MAX_LCD_IP_LENGTH	14
 
-#define SET_DEFAULT_VOLTAGE	'v'
-#define SET_VOLTAGE			'w'
-#define SAVE_NETWORKS		'n'
-#define CMD_ONOFF			'o'
-#define SET_AUTORUN			'a'
-#define PAGE_STATE			'p'
-#define DATA_PVI			'd'
-#define MEASUREWATTHOUR		'm'
-#define FW_VERSION			'f'
+#define	ON			0
+#define	OFF			1
+#define	HOME			0
+#define	SETTINGS		1
 
-#define FWversion	1.2
+/*----------------------------------------------------------------------------*/
+ESP8266WebServer	*server;
+WebSocketsServer	webSocket = WebSocketsServer(81);
+IPAddress		ip = IPAddress(192, 168, 4, 1);
 
-uint8_t onoff = OFF;
-unsigned char measureWh;
-float setVoltage;
-unsigned char connectedWeb;
-unsigned char connectedLCD;
-unsigned char timerId;
-unsigned char timerId2;
-unsigned char autorun;
+/* lcd slave address are 0x27 or 0x3f */
+unsigned char 		lcdSlaveAddr;
+LiquidCrystal_I2C	lcd(0x27, 16, 2);
 
-unsigned char D4state;
-unsigned char D1state;
+unsigned char	onoff = OFF;
+unsigned char	measureWh;
+unsigned char	connectedWeb;
+unsigned char	connectedLCD;
+unsigned char	timerId;
+unsigned char	timerId2;
+unsigned char	autorun;
 
-char ssid[20];
-char password[20];
-unsigned int ipaddr[4];
+unsigned char	D4state;
+unsigned char	D1state;
 
-float volt;
-float ampere;
-float watt;
-double watth;
+char		ssid[20];
+char		password[20];
+unsigned int	ipaddr[4];
 
-#define MAX_SRV_CLIENTS 1
+float		setVoltage;
+float		volt;
+float		ampere;
+float		watt;
+double		watth;
 
-ESP8266WebServer server;
-WebSocketsServer webSocket = WebSocketsServer(81);
-IPAddress ip = IPAddress(192, 168, 4, 1);
-
-SimpleTimer timer;
-SimpleTimer timer2;
-// lcd slave address are 0x27 or 0x3f
-LiquidCrystal_I2C lcd(0x27, 16, 2);
+SimpleTimer	timer;
+SimpleTimer	timer2;
 
 struct client_sp2 {
-    uint8_t connected;
-    uint8_t page;
+	unsigned char	connected;
+	unsigned char	page;
 };
 
 struct client_sp2 client_sp2[5];
 
-void setup() {
-    USE_SERIAL.begin(115200);
-    USE_SERIAL.setDebugOutput(true);
-    pinMode(POWERLED, OUTPUT);
+/*----------------------------------------------------------------------------*/
+/*----------------------------------------------------------------------------*/
+void setup()
+{
+	USE_SERIAL.begin(115200);
+	USE_SERIAL.setDebugOutput(true);
+	pinMode(POWERLED, OUTPUT);
 
-    Wire.begin(I2C_SDA, I2C_SCL);
-    mcp4652_init();
-    ina231_configure();
+	Wire.begin(I2C_SDA, I2C_SCL);
+	mcp4652_init();
+	ina231_configure();
 
-    pinMode(BTN_ONOFF, INPUT);
-    attachInterrupt(digitalPinToInterrupt(BTN_ONOFF), pinChanged, CHANGE);
+	pinMode(BTN_ONOFF, INPUT);
+	attachInterrupt(digitalPinToInterrupt(BTN_ONOFF), pinChanged, CHANGE);
 
-    for(uint8_t t = 4; t > 0; t--) {
-        USE_SERIAL.printf("[SETUP] BOOT WAIT %d...\n\r", t);
-        USE_SERIAL.flush();
-        delay(1000);
-    }
+	for (unsigned char t = 4; t > 0; t--) {
+		USE_SERIAL.printf("[SETUP] BOOT WAIT %d...\n\r", t);
+		USE_SERIAL.flush();
+		delay(1000);
+	}
 
-    SPIFFS.begin();
-    {
-        Dir dir = SPIFFS.openDir("/");
-        while (dir.next()) {
-            String fileName = dir.fileName();
-            size_t fileSize = dir.fileSize();
-            USE_SERIAL.printf("FS File: %s, size: %s\n\r",
-            fileName.c_str(), formatBytes(fileSize).c_str());
-        }
-        USE_SERIAL.printf("\n\r");
-    }
+	SPIFFS.begin();
+	{
+		Dir dir = SPIFFS.openDir("/");
+		while (dir.next()) {
+			String fileName = dir.fileName();
+			size_t fileSize = dir.fileSize();
+			USE_SERIAL.printf("FS File: %s, size: %s\n\r",
+			fileName.c_str(), formatBytes(fileSize).c_str());
+		}
+		USE_SERIAL.printf("\n\r");
+	}
 
-    initSmartPower();
+	initSmartPower();
 	lcd_status();
-
 	webserver_init();
 
-    timerId = timer.setInterval(1000, handler);
+	timerId = timer.setInterval(1000, handler);
 
-    // Log
-    logServer.begin();
-    logServer.setNoDelay(true);
+	// Log
+	logServer.begin();
+	logServer.setNoDelay(true);
 }
 
-void loop() {
-    server.handleClient();
-    webSocket.loop();
-    timer.run();
+/*----------------------------------------------------------------------------*/
+void loop()
+{
+	server->handleClient();
+	webSocket.loop();
+	timer.run();
 
+	if (logServer.hasClient()) {
+		// A connection attempt is being made
+		USE_SERIAL.printf("A connection attempt is being made.\n");
 
-    if (logServer.hasClient())
-    {
-      // A connection attempt is being made
-      USE_SERIAL.printf("A connection attempt is being made.\n");
+		if (!logClient) {
+			// This is the first client to connect
+			logClient = logServer.available();
 
-      if (!logClient)
-      {
-        // This is the first client to connect
-        logClient = logServer.available();
+			USE_SERIAL.printf("This is the first client to connect.\n");
+		} else {
+			if (!logClient.connected()) {
+				// A previous client has disconnected.
+				//  Connect the new client.
+				logClient.stop();
+				logClient = logServer.available();
 
-        USE_SERIAL.printf("This is the first client to connect.\n");
-      }
-      else
-      {
-        if (!logClient.connected())
-        {
-          // A previous client has disconnected.
-          //  Connect the new client.
-          logClient.stop();
-          logClient = logServer.available();
+				USE_SERIAL.printf("A previous client has disconnected.\n");
+			} else {
+				// A client connection is already in use.
+				// Drop the new connection attempt.
+				WiFiClient tempClient = logServer.available();
+				tempClient.stop();
 
-          USE_SERIAL.printf("A previous client has disconnected.\n");
-        }
-        else
-        {
-          // A client connection is already in use.
-          // Drop the new connection attempt.
-          WiFiClient tempClient = logServer.available();
-          tempClient.stop();
-
-          USE_SERIAL.printf("A client connection is already in use.\n");
-        }
-      }
-    }
-
-
+				USE_SERIAL.printf("A client connection is already in use.\n");
+			}
+		}
+	}
 }
 
+/*----------------------------------------------------------------------------*/
 void webserver_init(void)
 {
-    IPAddress gateway(ip[0], ip[1], ip[2], ip[3]);
-    IPAddress subnet(255, 255, 255, 0);
-    WiFi.softAPConfig(ip, gateway, subnet);
+	IPAddress gateway(ip[0], ip[1], ip[2], ip[3]);
+	IPAddress subnet(255, 255, 255, 0);
+	WiFi.softAPConfig(ip, gateway, subnet);
 
-    WiFi.softAP(ssid, password);
-    USE_SERIAL.println("");
-    USE_SERIAL.print("Connected! IP address: ");
-    USE_SERIAL.println(WiFi.softAPIP());
+	WiFi.softAP(ssid, password);
+	USE_SERIAL.println("");
+	USE_SERIAL.print("Connected! IP address: ");
+	USE_SERIAL.println(WiFi.softAPIP());
 
+	// start webSocket server
+	webSocket.begin();
+	webSocket.onEvent(webSocketEvent);
 
-    // start webSocket server
-    webSocket.begin();
-    webSocket.onEvent(webSocketEvent);
+	server->on("/list", HTTP_GET, handleFileList);
 
-    server.on("/list", HTTP_GET, handleFileList);
+	//use it to load content from SPIFFS
+	server->onNotFound([](){
+		if(!handleFileRead(server->uri()))
+			server->send(404, "text/plain", "FileNotFound");
+	});
+	server->begin();
 
-    //use it to load content from SPIFFS
-    server.onNotFound([](){
-        if(!handleFileRead(server.uri()))
-        server.send(404, "text/plain", "FileNotFound");
-    });
-    server.begin();
-
-    USE_SERIAL.println("HTTP server started");
+	USE_SERIAL.println("HTTP server started");
 }
 
+/*----------------------------------------------------------------------------*/
 //format bytes
-String formatBytes(size_t bytes){
-    if (bytes < 1024){
-        return String(bytes)+"B";
-    } else if(bytes < (1024 * 1024)){
-        return String(bytes/1024.0)+"KB";
-    } else if(bytes < (1024 * 1024 * 1024)){
-        return String(bytes/1024.0/1024.0)+"MB";
-    } else {
-        return String(bytes/1024.0/1024.0/1024.0)+"GB";
-    }
+String formatBytes(size_t bytes)
+{
+	if     (bytes < 1024)
+		return String(bytes)+"B";
+	else if(bytes < (1024 * 1024))
+		return String(bytes/1024.0)+"KB";
+	else if(bytes < (1024 * 1024 * 1024))
+		return String(bytes/1024.0/1024.0)+"MB";
+	else
+		return String(bytes/1024.0/1024.0/1024.0)+"GB";
 }
 
-String getContentType(String filename) {
-    if(server.hasArg("download")) return "application/octet-stream";
-    else if(filename.endsWith(".htm")) return "text/html";
-    else if(filename.endsWith(".html")) return "text/html";
-    else if(filename.endsWith(".js")) return "application/javascript";
-    else if(filename.endsWith(".css")) return "text/css";
-    else if(filename.endsWith(".gif")) return "image/gif";
-    else if(filename.endsWith(".ico")) return "image/x-icon";
-    return "text/plain";
+/*----------------------------------------------------------------------------*/
+String getContentType(String filename)
+{
+	if     (server->hasArg("download"))	return "application/octet-stream";
+	else if(filename.endsWith(".htm"))	return "text/html";
+	else if(filename.endsWith(".html"))	return "text/html";
+	else if(filename.endsWith(".js"))	return "application/javascript";
+	else if(filename.endsWith(".css"))	return "text/css";
+	else if(filename.endsWith(".gif"))	return "image/gif";
+	else if(filename.endsWith(".ico"))	return "image/x-icon";
+
+	return "text/plain";
 }
 
-bool handleFileRead(String path) {
-    USE_SERIAL.println("handleFileRead: " + path);
-    if (path.endsWith("/")) {
-        path += "index.html";
-    }
-    String contentType = getContentType(path);
-    String pathWithGz = path + ".gz";
-    if (SPIFFS.exists(pathWithGz) || SPIFFS.exists(path)) {
-        if (SPIFFS.exists(pathWithGz))
-        path += ".gz";
-        File file = SPIFFS.open(path, "r");
-        size_t sent = server.streamFile(file, contentType);
-        file.close();
-        return true;
-    }
-    Serial.println("False!");
-    return false;
+/*----------------------------------------------------------------------------*/
+bool handleFileRead(String path)
+{
+	USE_SERIAL.println("handleFileRead: " + path);
+	if (path.endsWith("/"))
+		path += "index.html";
+
+	String contentType = getContentType(path);
+	String pathWithGz = path + ".gz";
+
+	if (SPIFFS.exists(pathWithGz) || SPIFFS.exists(path)) {
+		if (SPIFFS.exists(pathWithGz))
+			path += ".gz";
+		File file = SPIFFS.open(path, "r");
+		size_t sent = server->streamFile(file, contentType);
+		file.close();
+		return true;
+	}
+	Serial.println("False!");
+	return false;
 }
 
-void handleFileList() {
-    if(!server.hasArg("dir")) {server.send(500, "text/plain", "BAD ARGS"); return;}
-    String path = server.arg("dir");
-    Serial.println("handleFileList: " + path);
-    Dir dir = SPIFFS.openDir(path);
-    path = String();
+/*----------------------------------------------------------------------------*/
+void handleFileList()
+{
+	if (!server->hasArg("dir")) {
+		server->send(500, "text/plain", "BAD ARGS");
+		return;
+	}
+	String path = server->arg("dir");
+	Serial.println("handleFileList: " + path);
+	Dir dir = SPIFFS.openDir(path);
+	path = String();
 
-    String output = "[";
-    while(dir.next()) {
-        File entry = dir.openFile("r");
-        if (output != "[") output += ',';
-        bool isDir = false;
-        output += "{\"type\":\"";
-        output += (isDir)?"dir":"file";
-        output += "\",\"name\":\"";
-        output += String(entry.name()).substring(1);
-        output += "\"}";
-        entry.close();
-    }
+	String output = "[";
+	while(dir.next()) {
+		File entry = dir.openFile("r");
 
-    output += "]";
-    server.send(200, "text/json", output);
+		if (output != "[") output += ',';
+
+		bool isDir = false;
+		output += "{\"type\":\"";
+		output += (isDir)?"dir":"file";
+		output += "\",\"name\":\"";
+		output += String(entry.name()).substring(1);
+		output += "\"}";
+		entry.close();
+	}
+	output += "]";
+	server->send(200, "text/json", output);
 }
 
+/*----------------------------------------------------------------------------*/
 void handleClientData(uint8_t num, String data)
 {
-    Serial.println(data);
-    switch (data.charAt(0)) {
+	Serial.println(data);
+	switch (data.charAt(0)) {
 	case PAGE_STATE:
 		client_sp2[num].page = data.charAt(1)-48;
 		sendStatus(num, data.charAt(1)-48);
@@ -281,19 +304,19 @@ void handleClientData(uint8_t num, String data)
 		send_data_to_clients(String(CMD_ONOFF) + onoff, HOME, num);
 		break;
 	case SET_VOLTAGE:
-        setVoltage = data.substring(1).toFloat();
-        mcp4652_write(WRITE_WIPER0, quadraticRegression(setVoltage));
+		setVoltage = data.substring(1).toFloat();
+		mcp4652_write(WRITE_WIPER0, quadraticRegression(setVoltage));
 		send_data_to_clients(String(SET_VOLTAGE) + setVoltage, HOME, num);
-        break;
-	case SET_DEFAULT_VOLTAGE: {
-        File f = SPIFFS.open("/txt/settings.txt", "r+");
-        f.seek(0, SeekSet);
-        f.findUntil("voltage", "\n\r");
-        f.seek(1, SeekCur);
-        f.print(setVoltage);
-        f.close();
 		break;
-        }
+	case SET_DEFAULT_VOLTAGE: {
+		File f = SPIFFS.open("/txt/settings.txt", "r+");
+		f.seek(0, SeekSet);
+		f.findUntil("voltage", "\n\r");
+		f.seek(1, SeekCur);
+		f.print(setVoltage);
+		f.close();
+		break;
+	}
 	case SET_AUTORUN: {
 		if (autorun == data.substring(1).toInt()) {
 			break;
@@ -311,13 +334,13 @@ void handleClientData(uint8_t num, String data)
 		break;
 	}
 	case SAVE_NETWORKS: {
-        String _ssid = data.substring(1, data.indexOf(','));
-        data.remove(1, data.indexOf(','));
-        String _ipaddr = data.substring(1, data.indexOf(','));
-        data.remove(1, data.indexOf(','));
-        String _password = data.substring(1, data.indexOf(','));
-        if ((String(ssid) != _ssid) || (ip.toString() != _ipaddr) ||
-										(String(password) != _password)) {
+		String _ssid = data.substring(1, data.indexOf(','));
+		data.remove(1, data.indexOf(','));
+		String _ipaddr = data.substring(1, data.indexOf(','));
+		data.remove(1, data.indexOf(','));
+		String _password = data.substring(1, data.indexOf(','));
+		if ((String(ssid) != _ssid) || (ip.toString() != _ipaddr) ||
+			(String(password) != _password)) {
 			File f = SPIFFS.open("/js/settings.js", "w");
 			f.println("ssid=\"" + _ssid + "\"");
 			f.println("ipaddr=\"" + _ipaddr + "\"");
@@ -339,143 +362,141 @@ void handleClientData(uint8_t num, String data)
 	}
 }
 
+/*----------------------------------------------------------------------------*/
 void fs_init(void)
 {
-    String ssidTemp = "ssid=\"SmartPower2_" + String(ESP.getChipId(), HEX) + "\"";
+	String ssidTemp = "ssid=\"SmartPower2_" + String(ESP.getChipId(), HEX) + "\"";
 
-    File f = SPIFFS.open("/js/settings.js", "w");
-    f.println(ssidTemp.c_str());
-    f.println("ipaddr=\"192.168.4.1\"");
-    f.println("passwd=\"12345678\"");
-    f.flush();
-    f.close();
-    readNetworkConfig();
+	File f = SPIFFS.open("/js/settings.js", "w");
+	f.println(ssidTemp.c_str());
+	f.println("ipaddr=\"192.168.4.1\"");
+	f.println("passwd=\"12345678\"");
+	f.flush();
+	f.close();
+	readNetworkConfig();
 
-    File f2 = SPIFFS.open("/txt/settings.txt", "w");
-    f2.println("autorun=0");
-    f2.println("voltage=5.00");
-    f2.println("firstboot=0");
-    f2.flush();
-    f2.close();
-    readHWSettings();
+	File f2 = SPIFFS.open("/txt/settings.txt", "w");
+	f2.println("autorun=0");
+	f2.println("voltage=5.00");
+	f2.println("firstboot=0");
+	f2.flush();
+	f2.close();
+	readHWSettings();
 }
 
-void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t lenght) {
-    switch(type) {
-    case WStype_DISCONNECTED :
-        USE_SERIAL.printf("[%u] Disconnected!\n\r", num);
-        client_sp2[num].connected = 0;
-        connectedWeb = 0;
-        break;
-    case WStype_CONNECTED : {
+/*----------------------------------------------------------------------------*/
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t lenght)
+{
+	switch(type) {
+	case WStype_DISCONNECTED :
+		USE_SERIAL.printf("[%u] Disconnected!\n\r", num);
+		client_sp2[num].connected = 0;
+		connectedWeb = 0;
+		break;
+	case WStype_CONNECTED : {
 		IPAddress ip = webSocket.remoteIP(num);
 		USE_SERIAL.printf("[%u] Connected from %d.%d.%d.%d url: %s\n\r",
-									num, ip[0], ip[1], ip[2], ip[3], payload);
+					num, ip[0], ip[1], ip[2], ip[3], payload);
 		client_sp2[num].connected = 1;
 		connectedWeb = 1;
 		break;
 	}
-    case WStype_TEXT : {
+	case WStype_TEXT : {
 		handleClientData(num, String((char *)&payload[0]));
 		break;
 	}
-    case WStype_BIN :
+	case WStype_BIN :
 		USE_SERIAL.printf("[%u] get binary lenght: %u\n\r", num, lenght);
-        hexdump(payload, lenght);
-        break;
-    }
+		hexdump(payload, lenght);
+		break;
+	}
 }
 
+/*----------------------------------------------------------------------------*/
 void readHWSettings(void)
 {
-    File f = SPIFFS.open("/txt/settings.txt", "r");
+	File f = SPIFFS.open("/txt/settings.txt", "r");
 
-    f.seek(0, SeekSet);
-    f.findUntil("autorun", "\n\r");
-    f.seek(1, SeekCur);
-    autorun = f.readStringUntil('\n').toInt();
+	f.seek(0, SeekSet);
+	f.findUntil("autorun", "\n\r");
+	f.seek(1, SeekCur);
+	autorun = f.readStringUntil('\n').toInt();
 
-    f.findUntil("voltage", "\n\r");
-    f.seek(1, SeekCur);
-    setVoltage = f.readStringUntil('\n').toFloat();
+	f.findUntil("voltage", "\n\r");
+	f.seek(1, SeekCur);
+	setVoltage = f.readStringUntil('\n').toFloat();
 
-    f.close();
+	f.close();
 }
 
+/*----------------------------------------------------------------------------*/
 void readNetworkConfig(void)
 {
-    File f = SPIFFS.open("/js/settings.js", "r");
+	File f = SPIFFS.open("/js/settings.js", "r");
 
-    f.findUntil("ssid", "\n\r");
+	f.findUntil("ssid", "\n\r");
 
-    f.seek(2, SeekCur);
-    f.readStringUntil('"').toCharArray(ssid, 20);
+	f.seek(2, SeekCur);
+	f.readStringUntil('"').toCharArray(ssid, 20);
 
-    f.findUntil("ipaddr", "\n\r");
-    f.seek(2, SeekCur);
-    ipaddr[0] = f.readStringUntil('.').toInt();
-    ipaddr[1] = f.readStringUntil('.').toInt();
-    ipaddr[2] = f.readStringUntil('.').toInt();
-    ipaddr[3] = f.readStringUntil('"').toInt();
-    ip = IPAddress(ipaddr[0], ipaddr[1], ipaddr[2], ipaddr[3]);
-    server =  ESP8266WebServer(ip, 80);
+	f.findUntil("ipaddr", "\n\r");
+	f.seek(2, SeekCur);
+	ipaddr[0] = f.readStringUntil('.').toInt();
+	ipaddr[1] = f.readStringUntil('.').toInt();
+	ipaddr[2] = f.readStringUntil('.').toInt();
+	ipaddr[3] = f.readStringUntil('"').toInt();
+	ip = IPAddress(ipaddr[0], ipaddr[1], ipaddr[2], ipaddr[3]);
+	server =  new ESP8266WebServer(ip, 80);
 
-    f.findUntil("passwd", "\n\r");
-    f.seek(2, SeekCur);
-    f.readStringUntil('"').toCharArray(password, 20);
+	f.findUntil("passwd", "\n\r");
+	f.seek(2, SeekCur);
+	f.readStringUntil('"').toCharArray(password, 20);
 
-    f.close();
+	f.close();
 }
 
+/*----------------------------------------------------------------------------*/
 bool isFirstBoot()
 {
-  File f = SPIFFS.open("/txt/settings.txt", "r");
+	File f = SPIFFS.open("/txt/settings.txt", "r");
 
-  f.seek(0, SeekSet);
-  f.findUntil("firstboot", "\n\r");
-  f.seek(1, SeekCur);
-  int value = f.readStringUntil('\n').toInt();
+	f.seek(0, SeekSet);
+	f.findUntil("firstboot", "\n\r");
+	f.seek(1, SeekCur);
 
-  bool result;
-  if (value)
-  {
-    result = true;
-  }
-  else
-  {
-    result = false;
-  }
+	int value = f.readStringUntil('\n').toInt();
+	bool result;
+	if (value)
+		result = true;
+	else
+		result = false;
 
-  f.close();
+	f.close();
 
-  return result;
+	return result;
 }
 
+/*----------------------------------------------------------------------------*/
 void initSmartPower(void)
 {
-    if (isFirstBoot())
-    {
-      fs_init();
-    }
-    else
-    {
-      readHWSettings();
-      readNetworkConfig();
-    }
+	if (isFirstBoot())
+		fs_init();
+	else {
+		readHWSettings();
+		readNetworkConfig();
+	}
 
-    onoff = !autorun;
+	onoff = !autorun;
 
+	mcp4652_write(WRITE_WIPER0, quadraticRegression(setVoltage));
+	pinMode(POWER, OUTPUT);
+	digitalWrite(POWER, onoff);
 
-    mcp4652_write(WRITE_WIPER0, quadraticRegression(setVoltage));
-    pinMode(POWER, OUTPUT);
-    digitalWrite(POWER, onoff);
-
-    pinMode(D4, OUTPUT);
-    digitalWrite(D4, HIGH);
+	pinMode(D4, OUTPUT);
+	digitalWrite(D4, HIGH);
 }
 
-// lcd slave address are 0x27 or 0x3f
-unsigned char lcdSlaveAddr;
+/*----------------------------------------------------------------------------*/
 int lcd_available(void)
 {
 	Wire.beginTransmission(0x27);
@@ -491,24 +512,25 @@ int lcd_available(void)
 	}
 
 	lcdSlaveAddr = 0;
-
 	return 0;
 }
 
+/*----------------------------------------------------------------------------*/
 void lcd_status(void)
 {
 	if (lcd_available() > 0) {
 		if (!connectedLCD) {
-   			lcd = LiquidCrystal_I2C(lcdSlaveAddr, 16, 2);
-		    lcd.init();
-		    lcd.backlight();
-		    connectedLCD = 1;
+			lcd = LiquidCrystal_I2C(lcdSlaveAddr, 16, 2);
+			lcd.init();
+			lcd.backlight();
+			connectedLCD = 1;
 		}
-	} else {
-		connectedLCD = 0;
 	}
+	else
+		connectedLCD = 0;
 }
 
+/*----------------------------------------------------------------------------*/
 void printPower_LCD(void)
 {
 	double rwatth;
@@ -519,11 +541,19 @@ void printPower_LCD(void)
 	lcd.print(" A  ");
 
 	lcd.setCursor(0, 1);
-	if (watt < 10) {
+
+	lcd.print("                ");
+	lcd.setCursor(0, 1);
+#if 1
+	/* ADC Read Test */
+	watt = analogRead(0);
+	lcd.print(watt, 1);
+#endif
+#if 0
+	if (watt < 10)
 		lcd.print(watt, 3);
-	} else {
+	else
 		lcd.print(watt, 2);
-	}
 	lcd.print(" W ");
 
 	rwatth = watth/3600;
@@ -541,12 +571,15 @@ void printPower_LCD(void)
 		lcd.print(" K");
 	}
 	lcd.print("Wh     ");
+#endif
 }
 
+/*----------------------------------------------------------------------------*/
 uint8_t cnt_ssid;
 int8_t cnt_ip;
 int8_t cursor_ssid;
 int8_t cursor_ip;
+/*----------------------------------------------------------------------------*/
 void printInfo_LCD(void)
 {
 	String str;
@@ -606,6 +639,7 @@ void printInfo_LCD(void)
 	}
 }
 
+/*----------------------------------------------------------------------------*/
 void readPower(void)
 {
 	volt = ina231_read_voltage();
@@ -613,73 +647,80 @@ void readPower(void)
 	ampere = ina231_read_current();
 }
 
+/*----------------------------------------------------------------------------*/
 void wifi_connection_status(void)
 {
-    if (WiFi.softAPgetStationNum() > 0) {
-        if (connectedWeb) {
-            D4state = !D4state;
-        } else {
+	if (WiFi.softAPgetStationNum() > 0) {
+		if (connectedWeb)
+			D4state = !D4state;
+		else
 			D4state = LOW;
-		}
-    } else {
+	}
+	else
 		D4state = HIGH;
-    }
+
 	digitalWrite(D4, D4state);
 }
 
+/*----------------------------------------------------------------------------*/
 double a = 0.0000006562;
 double b = 0.0022084236;
 float c = 4.08;
+/*----------------------------------------------------------------------------*/
 int quadraticRegression(double volt)
 {
-    double d;
-    double root;
-    d = b * b -a*(c-volt);
-    root = (-b + sqrt(d))/a;
-    if (root < 0) {
-        root = 0;
-    } else if (root > 255) {
-        root = 255;
-    }
-    return root;
+	double d;
+	double root;
+
+	d = b * b -a*(c-volt);
+	root = (-b + sqrt(d))/a;
+
+	if (root < 0)
+		root = 0;
+	else if (root > 255)
+		root = 255;
+
+	return root;
 }
 
+/*----------------------------------------------------------------------------*/
 unsigned long btnPress;
 unsigned long btnRelese = 1;
 unsigned long currtime;
 unsigned char btnChanged;
 unsigned char resetCnt;
 unsigned char swlock;
+/*----------------------------------------------------------------------------*/
 void pinChanged()
 {
-    if ((millis() - currtime) > 30) {
-        swlock = 0;
-    }
+	if ((millis() - currtime) > 30)
+		swlock = 0;
 
-    if (!swlock) {
-        if (!digitalRead(BTN_ONOFF) && (btnPress == 0)) {
-            swlock = 1;
-            currtime = millis();
-            btnPress = 1;
-            btnRelese = 0;
-        }
-    }
+	if (!swlock) {
+		if (!digitalRead(BTN_ONOFF) && (btnPress == 0)) {
+			swlock = 1;
+			currtime = millis();
+			btnPress = 1;
+			btnRelese = 0;
+		}
+	}
 
-    if (!swlock) {
-        if (digitalRead(BTN_ONOFF) && (btnRelese == 0)) {
-            swlock = 1;
-            currtime = millis();
-            btnRelese = 1;
-            btnPress = 0;
-            btnChanged = 1;
-            onoff = !onoff;
-            watth = 0;
-            digitalWrite(POWER, onoff);
-            digitalWrite(POWERLED, LOW);
-        }
-    }
+	if (!swlock) {
+		if (digitalRead(BTN_ONOFF) && (btnRelese == 0)) {
+			swlock = 1;
+			currtime = millis();
+			btnRelese = 1;
+			btnPress = 0;
+			btnChanged = 1;
+			onoff = !onoff;
+			watth = 0;
+			digitalWrite(POWER, onoff);
+			digitalWrite(POWERLED, LOW);
+		}
+	}
 }
 
+/*----------------------------------------------------------------------------*/
 void readSystemReset()
 {
 	if (!digitalRead(BTN_ONOFF) && (btnPress == 1)) {
@@ -693,36 +734,40 @@ void readSystemReset()
 	}
 }
 
+/*----------------------------------------------------------------------------*/
 void sendStatus(uint8_t num, uint8_t page)
 {
-    if (!page) {
-        webSocket.sendTXT(num, String(CMD_ONOFF) + onoff);
-        webSocket.sendTXT(num, String(SET_VOLTAGE) + setVoltage);
-        webSocket.sendTXT(num, String(MEASUREWATTHOUR) + measureWh);
-        webSocket.sendTXT(num, String(FW_VERSION) + FWversion);
-    } else if (page) {
-        webSocket.sendTXT(num, String(SET_AUTORUN) + autorun);
-        webSocket.sendTXT(num, String(SAVE_NETWORKS) + String(ssid) + "," +
-                        ip.toString() + "," + String(password));
-    }
+	if (!page) {
+		webSocket.sendTXT(num, String(CMD_ONOFF) + onoff);
+		webSocket.sendTXT(num, String(SET_VOLTAGE) + setVoltage);
+		webSocket.sendTXT(num, String(MEASUREWATTHOUR) + measureWh);
+		webSocket.sendTXT(num, String(FW_VERSION) + FWversion);
+	} else if (page) {
+		webSocket.sendTXT(num, String(SET_AUTORUN) + autorun);
+		webSocket.sendTXT(num, String(SAVE_NETWORKS) + String(ssid) + "," +
+			ip.toString() + "," + String(password));
+	}
 }
 
+/*----------------------------------------------------------------------------*/
 void send_data_to_clients(String str, uint8_t page)
 {
-    for (int i = 0; i < 5; i++) {
-        if (client_sp2[i].connected && (client_sp2[i].page == page))
-            webSocket.sendTXT(i, str);
-    }
+	for (int i = 0; i < 5; i++) {
+		if (client_sp2[i].connected && (client_sp2[i].page == page))
+			webSocket.sendTXT(i, str);
+	}
 }
 
+/*----------------------------------------------------------------------------*/
 void send_data_to_clients(String str, uint8_t page, uint8_t num)
 {
-    for (int i = 0; i < 5; i++) {
-        if (client_sp2[i].connected && (client_sp2[i].page == page) && (num != i))
-            webSocket.sendTXT(i, str);
-    }
+	for (int i = 0; i < 5; i++) {
+		if (client_sp2[i].connected && (client_sp2[i].page == page) && (num != i))
+			webSocket.sendTXT(i, str);
+	}
 }
 
+/*----------------------------------------------------------------------------*/
 void handler(void)
 {
 	if (onoff == ON) {
@@ -754,29 +799,29 @@ void handler(void)
 		if (onoff == ON) {
 			String data = String(DATA_PVI);
 			data += String(watt, 3) + "," + String(volt, 3) + "," + String(ampere, 3);
-			if (measureWh) {
+			if (measureWh)
 				watth += watt;
-			}
 			data += "," + String(watth/3600, 3);
 			send_data_to_clients(data, HOME);
 		}
 	}
 
-  if (logClient && logClient.connected())
-  {
-    // Report the log info
-    String data = String(volt, 3) + "," + String(ampere, 3) + "," +
-      String(watt, 3) + "," + String(watth/3600, 3) + "\r\n";
+	if (logClient && logClient.connected())	{
+		// Report the log info
+		String data = String(volt, 3) + "," + String(ampere, 3) + "," +
+		String(watt, 3) + "," + String(watth/3600, 3) + "\r\n";
 
-    logClient.write(data.c_str());
+		logClient.write(data.c_str());
 
-    while(logClient.available())
-    {
-      logClient.read();
-    }
-  }
+		while(logClient.available())
+			logClient.read();
+	}
 
 	lcd_status();
 	wifi_connection_status();
 	readSystemReset();
 }
+
+/*----------------------------------------------------------------------------*/
+/*----------------------------------------------------------------------------*/
+
